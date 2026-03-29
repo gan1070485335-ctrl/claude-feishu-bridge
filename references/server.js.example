@@ -1,0 +1,187 @@
+const express = require('express');
+const axios = require('axios');
+const winston = require('winston');
+const dotenv = require('dotenv');
+const path = require('path');
+const crypto = require('crypto');
+
+dotenv.config({ path: path.join(__dirname, '..', '.env'), override: true });
+
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({
+      filename: path.join(__dirname, '..', 'logs', 'bridge.log'),
+      maxsize: 5242880,
+      maxFiles: 5
+    })
+  ]
+});
+
+class ClaudeFeishuBridge {
+  constructor() {
+    this.appId = process.env.FEISHU_APP_ID;
+    this.appSecret = process.env.FEISHU_APP_SECRET;
+    this.verificationToken = process.env.FEISHU_VERIFICATION_TOKEN || '';
+    this.encryptKey = process.env.FEISHU_ENCRYPT_KEY || '';
+    this.claudeModel = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
+    this.port = parseInt(process.env.PORT || '3000', 10);
+    this.host = process.env.HOST || '127.0.0.1';
+    this.allowFrom = process.env.FEISHU_ALLOW_FROM
+      ? process.env.FEISHU_ALLOW_FROM.split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+
+    this.accessToken = null;
+    this.tokenExpireTime = 0;
+
+    this.app = express();
+    this.app.use(express.json());
+    this.setupRoutes();
+  }
+
+  setupRoutes() {
+    this.app.get('/health', (req, res) => {
+      res.json({ status: 'ok', service: 'claude-feishu-bridge', timestamp: new Date().toISOString() });
+    });
+
+    // 仅建议本地调试时启用，生产默认关闭
+    if (process.env.ENABLE_TEST_ENDPOINT === 'true') {
+      this.app.post('/test/claude', async (req, res) => {
+        try {
+          const response = await this.callAI(req.body?.message || 'ping');
+          res.json({ success: true, response });
+        } catch (error) {
+          res.status(500).json({ success: false, error: error.message });
+        }
+      });
+    }
+
+    this.app.post('/webhook', async (req, res) => {
+      try {
+        const body = req.body || {};
+
+        if (body.type === 'url_verification') {
+          return res.json({ challenge: body.challenge });
+        }
+
+        const event = body.event || {};
+        const senderId = event.sender?.sender_id?.open_id || event.sender?.sender_id?.user_id || '';
+        if (this.allowFrom.length > 0 && senderId && !this.allowFrom.includes(senderId)) {
+          logger.warn('sender not allowed', { senderId });
+          return res.json({ code: 0, msg: 'ignored' });
+        }
+
+        if (body.header?.event_type === 'im.message.receive_v1') {
+          this.handleMessage(body).catch(err => logger.error('handleMessage failed', { error: err.message }));
+        }
+
+        res.json({ code: 0, msg: 'success' });
+      } catch (error) {
+        logger.error('webhook failed', { error: error.message });
+        res.status(500).json({ code: -1, msg: error.message });
+      }
+    });
+  }
+
+  async getAccessToken() {
+    if (this.accessToken && Date.now() < this.tokenExpireTime - 60000) return this.accessToken;
+
+    const response = await axios.post(
+      'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+      { app_id: this.appId, app_secret: this.appSecret },
+      { timeout: 20000 }
+    );
+
+    if (response.data?.code !== 0) {
+      throw new Error(`feishu auth failed: ${response.data?.msg || 'unknown error'}`);
+    }
+
+    this.accessToken = response.data?.tenant_access_token || response.data?.data?.tenant_access_token;
+    const expire = response.data?.expire || response.data?.data?.expire || 7200;
+    this.tokenExpireTime = Date.now() + expire * 1000;
+    return this.accessToken;
+  }
+
+  async callAI(message) {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY 未设置');
+
+    const systemPrompt = process.env.SYSTEM_PROMPT || '你是一个中文技术助手，请简洁回答。';
+
+    const response = await axios.post(
+      `${baseUrl}/v1/messages`,
+      {
+        model: this.claudeModel,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: message }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        timeout: 60000
+      }
+    );
+
+    return response.data?.content?.[0]?.text || '';
+  }
+
+  async handleMessage(body) {
+    const message = body.event?.message;
+    if (!message) return;
+
+    let content = '';
+    try {
+      const contentObj = JSON.parse(message.content || '{}');
+      content = contentObj.text || '';
+    } catch {
+      content = message.content || '';
+    }
+    if (!content) return;
+
+    const response = await this.callAI(content);
+    await this.sendFeishuMessage(message.chat_id, response);
+  }
+
+  async sendFeishuMessage(chatId, content) {
+    const token = await this.getAccessToken();
+    const response = await axios.post(
+      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+      {
+        receive_id: chatId,
+        msg_type: 'text',
+        content: JSON.stringify({ text: content })
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 20000
+      }
+    );
+
+    if (response.data?.code !== 0) {
+      throw new Error(`send message failed: ${response.data?.msg || 'unknown error'}`);
+    }
+
+    return response.data;
+  }
+
+  start() {
+    this.app.listen(this.port, this.host, () => {
+      logger.info('bridge started', { host: this.host, port: this.port });
+    });
+  }
+}
+
+new ClaudeFeishuBridge().start();
