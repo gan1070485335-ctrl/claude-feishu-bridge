@@ -14,25 +14,6 @@ It demonstrates a minimal end-to-end flow:
 
 ---
 
-## GitHub Metadata
-
-- **Repository name**: `claude-feishu-bridge`
-- **Description**: `A prototype bridge for connecting Feishu bots with Claude or Anthropic Messages-compatible AI models.`
-- **Tagline（中文）**: `飞书机器人接入 Claude / Anthropic Messages 兼容模型的原型桥接方案。`
-- **Suggested topics**:
-  - `feishu`
-  - `lark`
-  - `claude`
-  - `anthropic`
-  - `chatbot`
-  - `webhook`
-  - `nodejs`
-  - `agent`
-  - `ai-bot`
-  - `prototype`
-
----
-
 ## Project Status / 项目状态
 
 **Prototype / Reference Implementation**
@@ -73,12 +54,12 @@ This repository is intended as a **public example** and **starting point**, not 
 
 ---
 
-## Included Files
+## Repository Layout
 
-This skill/repo currently includes:
+This repository currently includes:
 
-- `SKILL.md` — skill instructions and boundaries
-- `README.md` — public-facing repository overview
+- `SKILL.md` — skill instructions and scope
+- `README.md` — public-facing project overview
 - `references/server.js.example` — reference server implementation
 - `references/.env.example` — environment template
 - `references/package.json.example` — dependency example
@@ -88,14 +69,14 @@ This skill/repo currently includes:
 
 ## Quick Start
 
-### 1. Create a project directory
+### 1. Prepare a local project directory
 
 ```bash
 mkdir -p claude-feishu-bridge && cd claude-feishu-bridge
 mkdir -p logs references
 ```
 
-### 2. Copy reference files
+### 2. Copy the reference files
 
 ```bash
 cp references/server.js.example server.js
@@ -236,26 +217,3 @@ This project is a minimal prototype and reference implementation.
 Use it as a starting point, not as a production-ready service.
 
 本项目是最小原型与参考实现，不应直接视为生产级服务。
-
----
-
-## Suggested Next Steps
-
-If you plan to publish this repository, the recommended next steps are:
-
-1. Initialize a git repository
-2. Review all files one last time for secrets
-3. Create a GitHub repository named `claude-feishu-bridge`
-4. Set description + topics
-5. Push the code
-
-Example:
-
-```bash
-git init
-git add .
-git commit -m "feat: initial public prototype"
-gh repo create claude-feishu-bridge --public --source=. --remote=origin --push
-```
-
-> Requires GitHub authentication via `gh auth login`.
